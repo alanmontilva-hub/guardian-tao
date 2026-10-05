@@ -1,0 +1,26 @@
+name: guardian-tao
+on:
+  schedule:
+    - cron: "*/10 * * * *"     # cada 10 min (GitHub puede retrasarlo unos minutos)
+  workflow_dispatch: {}          # botón "Run workflow" para probar a mano
+concurrency: { group: guardian, cancel-in-progress: false }
+jobs:
+  vigilar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install requests
+      - run: python guardian.py
+        env:
+          BITUNIX_API_KEY: ${{ secrets.BITUNIX_API_KEY }}
+          BITUNIX_SECRET_KEY: ${{ secrets.BITUNIX_SECRET_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          LATIDO_TOPIC: ${{ secrets.LATIDO_TOPIC }}
+          LATIDO_MIN: "20"
+          MODO: ${{ vars.MODO || 'papel' }}
+          SIMBOLOS: TAOUSDT
+          GRACIA_MIN: "10"
+          RIESGO_MAX: "2.0"
