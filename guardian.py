@@ -1,5 +1,5 @@
 """
-Guardián TAO v2 (7-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
+Guardián TAO v2.1 (7-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
 
 La única fuente de verdad es Bitunix:
   - hora de apertura  -> ctime de la posición
@@ -11,7 +11,8 @@ Reglas (en cada corrida, idempotentes):
   1. Sin stop en Bitunix           -> pone stop de emergencia (4%) y avisa 🚨
   2. Riesgo abierto > RIESGO_MAX % -> avisa 🚨 (detecta entradas dobles)
   3. Órdenes de entrada del bot duplicadas, o pendientes con posición abierta -> las cancela
-  4. Edad >= 12h y candado no hecho: si pierde -> cierra; si gana -> stop asegura 90%
+  4. Edad >= 12h y candado no hecho: si pierde -> cierra; si gana -> stop asegura 90% (v2.1: mueve TODOS los stops,
+     lo verifica leyendo Bitunix y, si no lo puede confirmar, CIERRA la posición)
   5. Edad >= 24h                    -> cierra
   6. Latido del bot (v2, sin falsas alarmas):
      · avisa solo si el bot lleva más de LATIDO_MIN (por defecto 30) min sin publicar;
@@ -93,6 +94,11 @@ class Bitunix:
     def poner_stop(self, sym, pid, sl, existe):
         path = "/api/v1/futures/tpsl/position/modify_order" if existe else "/api/v1/futures/tpsl/position/place_order"
         return self._req("POST", path, data={"symbol": sym, "positionId": str(pid), "slPrice": f"{sl:.2f}", "slStopType": "LAST_PRICE"})
+    def modificar_sl_orden(self, oid, sl, qty=None):
+        d = {"orderId": str(oid), "slPrice": f"{sl:.2f}", "slStopType": "LAST_PRICE", "slOrderType": "MARKET"}
+        if qty:
+            d["slQty"] = str(qty)
+        return self._req("POST", "/api/v1/futures/tpsl/modify_order", data=d)
     def cancelar(self, sym, oids):
         return self._req("POST", "/api/v1/futures/trade/cancel_orders",
                          data={"symbol": sym, "orderList": [{"orderId": str(o)} for o in oids]})
@@ -152,6 +158,33 @@ def depurar_entradas_sin_posicion(ordenes, cfg):
     if len(e) > 1:
         return [("cancelar", [o["orderId"] for o in e[:-1]], f"{len(e)} órdenes de entrada del bot vivas a la vez (entrada doble)")]
     return []
+
+def cubierto(tpsl, pos, nivel):
+    """True si los stops vigentes en `nivel` o mejor cubren toda la posición."""
+    lado, qty = lado_de(pos), float(pos.get("qty"))
+    c = 0.0
+    for t in tpsl:
+        if str(t.get("positionId")) == str(pos.get("positionId")) and t.get("slPrice") not in (None, "", "0"):
+            if (float(t["slPrice"]) - nivel) * lado >= -0.01:
+                c += float(t.get("slQty") or 0) or qty
+    return c >= qty * 0.999
+
+def mover_verificado(bx, sym, pos, nivel):
+    """v2.1: mueve TODOS los stops (los de orden y el de posición) y verifica leyendo Bitunix."""
+    for t in bx.tpsl(sym):
+        if str(t.get("positionId")) == str(pos.get("positionId")) and t.get("slPrice") not in (None, "", "0"):
+            try:
+                bx.modificar_sl_orden(t.get("id") or t.get("orderId"), nivel, t.get("slQty"))
+            except Exception as e:
+                print("modificar stop de orden:", e)
+    vig = bx.tpsl(sym)
+    if not cubierto(vig, pos, nivel):
+        existe = any(str(t.get("positionId")) == str(pos.get("positionId")) and not t.get("slQty") for t in vig)
+        try:
+            bx.poner_stop(sym, pos["positionId"], nivel, existe)
+        except Exception as e:
+            print("stop de posición:", e)
+    return cubierto(bx.tpsl(sym), pos, nivel)
 
 # ───────── Latido del bot (v2) ─────────
 def es_noche(ahora_ms):
@@ -223,7 +256,11 @@ def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests):
                     if a[0] == "cerrar":
                         bx.cerrar(pos["positionId"])
                     elif a[0] == "stop":
-                        bx.poner_stop(sym_, pos["positionId"], a[1], a[2])
+                        if not mover_verificado(bx, sym_, pos, a[1]):
+                            # v2.1: si no se puede CONFIRMAR el stop, se cierra para no regalar la ganancia/arriesgar de más
+                            bx.cerrar(pos["positionId"])
+                            txt = (f"🚨 {sym_}: no pude confirmar el stop en {a[1]:.2f} ({a[-1]}). "
+                                   f"Cerré la posición a mercado para protegerla.")
                     elif a[0] == "cancelar":
                         bx.cancelar(sym_, a[1])
                 except Exception as e:
@@ -249,4 +286,4 @@ if __name__ == "__main__":
     cfg = config()
     bx = Bitunix(env("BITUNIX_API_KEY"), env("BITUNIX_SECRET_KEY"))
     r = correr(bx, cfg)
-    print(f"Guardián v2: {len(r)} acciones · modo {cfg['modo']}")
+    print(f"Guardián v2.1: {len(r)} acciones · modo {cfg['modo']}")
