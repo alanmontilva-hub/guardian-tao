@@ -109,10 +109,12 @@ def lado_de(pos):
     return 1 if s in ("LONG", "BUY") else -1          # la doc dice LONG/SHORT; el historial usa BUY/SELL
 
 def stop_de(pos, tpsl):
-    for t in tpsl:
-        if str(t.get("positionId")) == str(pos.get("positionId")) and t.get("slPrice") not in (None, "", "0"):
-            return float(t["slPrice"]), True
-    return None, False
+    """El stop MÁS protector vigente (el más alto en largos, el más bajo en cortos)."""
+    sls = [float(t["slPrice"]) for t in tpsl
+           if str(t.get("positionId")) == str(pos.get("positionId")) and t.get("slPrice") not in (None, "", "0")]
+    if not sls:
+        return None, False
+    return (max(sls) if lado_de(pos) == 1 else min(sls)), True
 
 def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg):
     """Acciones: ("cerrar", motivo) | ("stop", precio, existe, motivo) | ("cancelar", [oids], motivo) | ("aviso", texto)"""
