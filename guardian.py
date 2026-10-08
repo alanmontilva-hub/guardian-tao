@@ -1,11 +1,16 @@
 """
-Guardián TAO v2.1 (7-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
+Guardián TAO v2.2 (8-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
 
 La única fuente de verdad es Bitunix:
   - hora de apertura  -> ctime de la posición
   - entrada           -> avgOpenPrice
   - stop vigente      -> orden TP/SL de la posición
   - candado 12h hecho -> el stop ya está del lado de la ganancia (o en entrada)
+
+v2.2: · MODO acepta REAL/real/Real (antes "REAL" en mayúsculas dejaba el guardián en PAPEL sin avisar).
+      · Respeta el modo de cada posición que publica el bot v6.6 (app / Telegram): 👤 MANUAL = no aplica 12h ni 24h
+        (solo stop de emergencia si no tiene stop y aviso de riesgo). 🤖 AUTO = reglas completas, también para
+        posiciones abiertas a mano. Si no hay estado del bot, trata todo como AUTO (lo más protector).
 
 Reglas (en cada corrida, idempotentes):
   1. Sin stop en Bitunix           -> pone stop de emergencia (4%) y avisa 🚨
@@ -116,7 +121,25 @@ def stop_de(pos, tpsl):
         return None, False
     return (max(sls) if lado_de(pos) == 1 else min(sls)), True
 
-def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg):
+def modo_pos(estado, pid):
+    """Modo publicado por el bot (canal _estado). Sin dato → AUTO."""
+    e = estado or {}
+    for o in e.get("ops") or []:
+        if o.get("k") == "pos" and str(o.get("id")) == str(pid):
+            return o.get("modo") or "auto"
+    return (e.get("modos") or {}).get(str(pid)) or e.get("modo_def") or "auto"
+
+def ultimo_estado(cfg, http=requests):
+    if not cfg.get("latido_topic"):
+        return None
+    try:
+        msgs = leer_topic(cfg, cfg["latido_topic"], "12h", http)
+        return json.loads(msgs[-1].get("message") or "{}") if msgs else None
+    except Exception as e:
+        print("estado del bot:", e)
+        return None
+
+def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg, manual=False):
     """Acciones: ("cerrar", motivo) | ("stop", precio, existe, motivo) | ("cancelar", [oids], motivo) | ("aviso", texto)"""
     acc = []
     lado = lado_de(pos)
@@ -130,7 +153,7 @@ def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg):
     entradas = [o for o in ordenes if str(o.get("clientId") or "").startswith(pref) and not o.get("reduceOnly")]
     if entradas:
         acc.append(("cancelar", [o["orderId"] for o in entradas], "orden de entrada del bot pendiente con posición ya abierta"))
-    if edad_h >= HOLD_H + gracia:
+    if edad_h >= HOLD_H + gracia and not manual:
         acc.append(("cerrar", f"24h cumplidas ({edad_h:.1f}h)"))
         return acc
     if sl is None:
@@ -141,6 +164,8 @@ def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg):
     if capital and riesgo / capital * 100 > cfg["riesgo_max"]:
         acc.append(("aviso", f"🚨 riesgo abierto {riesgo:.2f} USDT = {riesgo / capital * 100:.1f}% del capital "
                              f"(máx {cfg['riesgo_max']}%). Posible entrada doble: qty {qty}."))
+    if manual:
+        return acc                                   # 👤 MANUAL: sin 12h ni 24h
     candado_hecho = (sl - ent) * lado >= 0
     if edad_h >= CANDADO_H + gracia and not candado_hecho:
         g = (precio - ent) * lado
@@ -240,6 +265,7 @@ def avisar(cfg, texto, prioridad=4):
 def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests):
     ahora = ahora or int(time.time() * 1000)
     hechos, abierto = [], False
+    estado = ultimo_estado(cfg, http)
     for sym in cfg["simbolos"]:
         posiciones, tpsl, ordenes = bx.posiciones(sym), bx.tpsl(sym), bx.ordenes(sym)
         abierto = abierto or bool(posiciones) or any(str(o.get("clientId") or "").startswith(cfg["prefijo"]) for o in ordenes)
@@ -248,7 +274,8 @@ def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests):
         else:
             precio = (precio_fn or bx.precio)(sym)
             cap = (capital_fn or bx.capital)()
-            acciones = [(sym, p, a) for p in posiciones for a in decidir(p, tpsl, ordenes, precio, ahora, cap, cfg)]
+            acciones = [(sym, p, a) for p in posiciones
+                        for a in decidir(p, tpsl, ordenes, precio, ahora, cap, cfg, modo_pos(estado, p.get("positionId")) == "manual")]
         for sym_, pos, a in acciones:
             txt = f"🛡️ {sym_}: " + (a[-1] if a[0] != "aviso" else a[1])
             if cfg["modo"] != "real" and a[0] != "aviso":
@@ -280,12 +307,13 @@ def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests):
 
 def config():
     return {"simbolos": env("SIMBOLOS", "TAOUSDT").split(","), "gracia_min": float(env("GRACIA_MIN", 10)),
-            "riesgo_max": float(env("RIESGO_MAX", 2.0)), "modo": env("MODO", "papel"), "prefijo": env("PREFIJO_BOT", "taol"),
+            "riesgo_max": float(env("RIESGO_MAX", 2.0)), "modo": str(env("MODO", "papel")).strip().lower(), "prefijo": env("PREFIJO_BOT", "taol"),
             "ntfy": env("NTFY_TOPIC"), "ntfy_server": env("NTFY_SERVER", "https://ntfy.sh"),
             "latido_topic": env("LATIDO_TOPIC"), "latido_min": max(30.0, float(env("LATIDO_MIN", 30)))}
 
 if __name__ == "__main__":
     cfg = config()
     bx = Bitunix(env("BITUNIX_API_KEY"), env("BITUNIX_SECRET_KEY"))
+    print(f"Guardián v2.2 · MODO={cfg['modo'].upper()} ({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'})")
     r = correr(bx, cfg)
-    print(f"Guardián v2.1: {len(r)} acciones · modo {cfg['modo']}")
+    print(f"Guardián v2.2: {len(r)} acciones · modo {cfg['modo']}")
