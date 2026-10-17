@@ -1,0 +1,27 @@
+name: diag-latido
+on:
+  push:
+    branches: [diag]
+permissions:
+  contents: write
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diag}
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install requests
+      - run: python diag/diag_latido.py
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          LATIDO_TOPIC: ${{ secrets.LATIDO_TOPIC }}
+      - name: Guardar el informe en la rama diag
+        if: always()
+        run: |
+          git config user.name "github-actions"; git config user.email "actions@github.com"
+          git add -f resultados/DIAG_LATIDO.md || true
+          git commit -q -m "diag $(date -u +%FT%H:%M) [skip ci]" || exit 0
+          git push origin HEAD:diag
