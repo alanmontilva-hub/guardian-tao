@@ -13,6 +13,30 @@ try:
     L += ["## Límites de ntfy.sh para un visitante anónimo (visto desde GitHub)", "```", json.dumps({k: a.get(k) for k in ("tier", "limits")}, indent=1), "```", ""]
 except Exception as e:
     L += [f"(no pude leer /v1/account: {e})", ""]
+L += ["## Configuración del guardián", "",
+      f"- LATIDO_TOPIC es igual a NTFY_TOPIC: **{EST == MAIN}**",
+      f"- LATIDO_TOPIC termina en _estado: **{EST.endswith('_estado')}**",
+      f"- LATIDO_TOPIC es igual a NTFY_TOPIC + '_estado': **{EST == MAIN + '_estado'}**", ""]
+real, codr = leer(MAIN + "_estado")
+rm = [m for m in real if m.get("event") == "message"]
+L += [f"## Canal REAL del bot (NTFY_TOPIC + '_estado'): {len(rm)} mensajes en 12 h (HTTP {codr})", ""]
+pr, hu, vers = None, [], {}
+for m in rm:
+    t = m["time"] * 1000
+    try:
+        e = json.loads(m.get("message") or ""); vers.setdefault((e.get("v"), e.get("inst")), [t, t, e.get("ini")]); vers[(e.get("v"), e.get("inst"))][1] = t
+    except Exception: pass
+    if pr and (t - pr) / 60000 > 12: hu.append((pr, t, (t - pr) / 60000))
+    pr = t
+if pr and (time.time() * 1000 - pr) / 60000 > 12: hu.append((pr, time.time() * 1000, (time.time() * 1000 - pr) / 60000))
+L += ["### Huecos de más de 12 min en el canal REAL", ""] + ([f"- {h(a)} → {h(b)}: **{g:.0f} min**" for a, b, g in hu] or ["- ninguno: el bot publicó sin cortes"]) + [""]
+L += ["### Copias del bot en el canal REAL", "", "| versión | instancia | arrancó | primer estado | último estado |", "|---|---|---|---|---|"]
+for (v, i), (t0, t1, ini) in vers.items():
+    L.append(f"| {v} | {i} | {h(ini) if ini else '?'} | {h(t0)} | {h(t1)} |")
+if rm:
+    tr = [len((m.get('message') or '').encode()) for m in rm]
+    L += ["", f"Tamaño del estado REAL: mín {min(tr)} · máx {max(tr)} bytes · con adjunto: {sum('attachment' in m for m in rm)}",
+          f"Mensajes por hora: {len(rm) / 12:.1f} (≈ {len(rm) * 2} por día; el límite de ntfy.sh es 250 por IP)", ""]
 est, code = leer(EST)
 msgs = [m for m in est if m.get("event") == "message"]
 L += [f"## Canal de estado: {len(msgs)} mensajes en 12 h (HTTP {code})", ""]
