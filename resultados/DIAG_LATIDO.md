@@ -1,5 +1,5 @@
 # Diagnóstico del latido del bot
-Generado: 17/10 10:11 (Caracas)
+Generado: 17/10 10:13 (Caracas)
 
 ## Límites de ntfy.sh para un visitante anónimo (visto desde GitHub)
 ```
@@ -26,24 +26,24 @@ Generado: 17/10 10:11 (Caracas)
 - LATIDO_TOPIC termina en _estado: **False**
 - LATIDO_TOPIC es igual a NTFY_TOPIC + '_estado': **False**
 
-## Canal REAL del bot (NTFY_TOPIC + '_estado'): 211 mensajes en 12 h (HTTP 200)
+## Canal REAL del bot (NTFY_TOPIC + '_estado'): 210 mensajes en 12 h (HTTP 200)
 
 ### Huecos de más de 12 min en el canal REAL
 
-- 17/10 04:09 → 17/10 10:11: **362 min**
+- 17/10 04:09 → 17/10 10:13: **365 min**
 
 ### Copias del bot en el canal REAL
 
 | versión | instancia | arrancó | primer estado | último estado |
 |---|---|---|---|---|
-| v7.1.1 | 1FE | 16/10 17:48 | 16/10 22:13 | 17/10 04:09 |
+| v7.1.1 | 1FE | 16/10 17:48 | 16/10 22:14 | 17/10 04:09 |
 
 Tamaño del estado REAL: mín 449 · máx 449 bytes · con adjunto: 0
-Mensajes por hora: 17.6 (≈ 422 por día; el límite de ntfy.sh es 250 por IP)
+Mensajes por hora: 17.5 (≈ 420 por día; el límite de ntfy.sh es 250 por IP)
 
 ### Qué cambia entre un estado y el siguiente (canal REAL)
 
-- 210 veces: cap_t
+- 209 veces: cap_t
 
 ## Canal de estado: 3 mensajes en 12 h (HTTP 200)
 
@@ -51,7 +51,7 @@ Mensajes por hora: 17.6 (≈ 422 por día; el límite de ntfy.sh es 250 por IP)
 
 - 17/10 01:41 → 17/10 05:44: **243 min**
 - 17/10 05:44 → 17/10 09:16: **213 min**
-- 17/10 09:16 → 17/10 10:11: **55 min**
+- 17/10 09:16 → 17/10 10:13: **57 min**
 
 ### Copias del bot (instancias) que publicaron
 
