@@ -37,6 +37,23 @@ if rm:
     tr = [len((m.get('message') or '').encode()) for m in rm]
     L += ["", f"Tamaño del estado REAL: mín {min(tr)} · máx {max(tr)} bytes · con adjunto: {sum('attachment' in m for m in rm)}",
           f"Mensajes por hora: {len(rm) / 12:.1f} (≈ {len(rm) * 2} por día; el límite de ntfy.sh es 250 por IP)", ""]
+# ¿qué campos cambian entre estados seguidos? (solo nombres de campo y conteos)
+import collections
+cambios = collections.Counter(); prevj = None; difs_t = []
+def plano(d, pre=""):
+    out = {}
+    for k, v in (d.items() if isinstance(d, dict) else []):
+        if isinstance(v, dict): out.update(plano(v, pre + k + "."))
+        else: out[pre + k] = json.dumps(v, sort_keys=True)
+    return out
+for m in rm:
+    try: e = plano(json.loads(m.get("message") or ""))
+    except Exception: continue
+    if prevj is not None:
+        ks = [k for k in set(e) | set(prevj) if e.get(k) != prevj.get(k)]
+        cambios[tuple(sorted(ks)) or ("(nada: latido)",)] += 1
+    prevj = e
+L += ["### Qué cambia entre un estado y el siguiente (canal REAL)", ""] + [f"- {n} veces: {', '.join(k)}" for k, n in cambios.most_common(12)] + [""]
 est, code = leer(EST)
 msgs = [m for m in est if m.get("event") == "message"]
 L += [f"## Canal de estado: {len(msgs)} mensajes en 12 h (HTTP {code})", ""]
