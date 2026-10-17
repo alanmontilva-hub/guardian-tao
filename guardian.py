@@ -218,6 +218,13 @@ def es_noche(ahora_ms):
     h = datetime.fromtimestamp(ahora_ms / 1000, CARACAS).hour
     return h >= NOCHE[0] or h < NOCHE[1]
 
+def topic_latido(latido, ntfy):
+    """El bot publica su estado en <NTFY_TOPIC>_estado. Si LATIDO_TOPIC quedó vacío o igual al canal principal
+    (así estaba: el guardián leía sus propios avisos y siempre decía 'no publica estado'), usa el correcto."""
+    if ntfy and (not latido or latido == ntfy or not latido.endswith("_estado")):
+        return ntfy + "_estado"
+    return latido
+
 def leer_topic(cfg, topic, desde, http=requests):
     """Mensajes del canal ntfy desde hace `desde` (ej. '30m', '3h'). Devuelve lista de dicts."""
     r = http.get(f"{cfg['ntfy_server']}/{topic}/json", params={"poll": "1", "since": desde}, timeout=20)
@@ -309,7 +316,8 @@ def config():
     return {"simbolos": env("SIMBOLOS", "TAOUSDT").split(","), "gracia_min": float(env("GRACIA_MIN", 10)),
             "riesgo_max": float(env("RIESGO_MAX", 2.0)), "modo": str(env("MODO", "papel")).strip().lower(), "prefijo": env("PREFIJO_BOT", "taol"),
             "ntfy": env("NTFY_TOPIC"), "ntfy_server": env("NTFY_SERVER", "https://ntfy.sh"),
-            "latido_topic": env("LATIDO_TOPIC"), "latido_min": max(30.0, float(env("LATIDO_MIN", 30)))}
+            "latido_topic": topic_latido(env("LATIDO_TOPIC"), env("NTFY_TOPIC")),
+            "latido_min": max(30.0, float(env("LATIDO_MIN", 30)))}
 
 if __name__ == "__main__":
     cfg = config()
