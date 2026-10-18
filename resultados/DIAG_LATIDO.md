@@ -1,5 +1,5 @@
 # Diagnóstico del latido del bot
-Generado: 17/10 10:13 (Caracas)
+Generado: 17/10 20:32 (Caracas)
 
 ## Límites de ntfy.sh para un visitante anónimo (visto desde GitHub)
 ```
@@ -26,44 +26,42 @@ Generado: 17/10 10:13 (Caracas)
 - LATIDO_TOPIC termina en _estado: **False**
 - LATIDO_TOPIC es igual a NTFY_TOPIC + '_estado': **False**
 
-## Canal REAL del bot (NTFY_TOPIC + '_estado'): 210 mensajes en 12 h (HTTP 200)
+## Canal REAL del bot (NTFY_TOPIC + '_estado'): 59 mensajes en 12 h (HTTP 200)
 
 ### Huecos de más de 12 min en el canal REAL
 
-- 17/10 04:09 → 17/10 10:13: **365 min**
+- ninguno: el bot publicó sin cortes
 
 ### Copias del bot en el canal REAL
 
 | versión | instancia | arrancó | primer estado | último estado |
 |---|---|---|---|---|
-| v7.1.1 | 1FE | 16/10 17:48 | 16/10 22:14 | 17/10 04:09 |
+| v7.1.2 | 047 | 17/10 10:13 | 17/10 10:13 | 17/10 20:28 |
 
 Tamaño del estado REAL: mín 449 · máx 449 bytes · con adjunto: 0
-Mensajes por hora: 17.5 (≈ 420 por día; el límite de ntfy.sh es 250 por IP)
+Mensajes por hora: 4.9 (≈ 118 por día; el límite de ntfy.sh es 250 por IP)
 
 ### Qué cambia entre un estado y el siguiente (canal REAL)
 
-- 209 veces: cap_t
+- 58 veces: cap_t
 
-## Canal de estado: 3 mensajes en 12 h (HTTP 200)
+## Canal de estado: 1 mensajes en 12 h (HTTP 200)
 
 ### Huecos de más de 12 min sin estado
 
-- 17/10 01:41 → 17/10 05:44: **243 min**
-- 17/10 05:44 → 17/10 09:16: **213 min**
-- 17/10 09:16 → 17/10 10:13: **57 min**
+- 17/10 09:16 → 17/10 20:32: **676 min**
 
 ### Copias del bot (instancias) que publicaron
 
 | instancia | versión | arrancó | primer estado | último estado |
 |---|---|---|---|---|
-| None | None | ? | 17/10 01:41 | 17/10 09:16 |
+| None | None | ? | 17/10 09:16 | 17/10 09:16 |
 
-Tamaño del estado: máx 143 bytes · con adjunto: 0 · ilegibles: 3
+Tamaño del estado: máx 143 bytes · con adjunto: 0 · ilegibles: 1
 
-## Canal principal: 3 mensajes en 12 h
+## Canal principal: 1 mensajes en 12 h
 
-- guardián: no publica estado: 3 → 17/10 01:41, 17/10 05:44, 17/10 09:16
+- guardián: no publica estado: 1 → 17/10 09:16
 - guardián: volvió: 0
 - app/bot: se apaga (otra copia): 0
 - bot iniciado: 0
@@ -73,6 +71,4 @@ Tamaño del estado: máx 143 bytes · con adjunto: 0 · ilegibles: 3
 
 | hora | min desde el anterior | bytes | adjunto | ilegible | versión | instancia |
 |---|---|---|---|---|---|---|
-| 17/10 01:41 |   0.0 | 143 |  | NO | None | None |
-| 17/10 05:44 | 243.1 | 143 |  | NO | None | None |
-| 17/10 09:16 | 212.6 | 143 |  | NO | None | None |
+| 17/10 09:16 |   0.0 | 143 |  | NO | None | None |
