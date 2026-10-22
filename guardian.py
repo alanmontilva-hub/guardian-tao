@@ -1,12 +1,15 @@
 """
-Guardián TAO v2.2 (8-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
+Guardián TAO v2.3 (21-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
 
 La única fuente de verdad es Bitunix:
   - hora de apertura  -> ctime de la posición
   - entrada           -> avgOpenPrice
   - stop vigente      -> orden TP/SL de la posición
-  - candado 12h hecho -> el stop ya está del lado de la ganancia (o en entrada)
+  - candado hecho     -> el stop ya está del lado de la ganancia (o en entrada)
 
+v2.3: · CANDADO TARDÍO (igual que el bot v7.2): a las CORTE_H (12) se cierra la posición que NO ganaba; la que ganaba sigue con su
+        stop y a las CANDADO_H (14) el stop sube a asegurar el 90% (si a esa hora ya no gana, se cierra). Para saber si ganaba a
+        las 12h lee de Bitunix la vela de 1 min que cierra en ese momento (sin estado propio). CANDADO_H=12 devuelve la regla v2.2.
 v2.2: · MODO acepta REAL/real/Real (antes "REAL" en mayúsculas dejaba el guardián en PAPEL sin avisar).
       · Respeta el modo de cada posición que publica el bot v6.6 (app / Telegram): 👤 MANUAL = no aplica 12h ni 24h
         (solo stop de emergencia si no tiene stop y aviso de riesgo). 🤖 AUTO = reglas completas, también para
@@ -16,8 +19,9 @@ Reglas (en cada corrida, idempotentes):
   1. Sin stop en Bitunix           -> pone stop de emergencia (4%) y avisa 🚨
   2. Riesgo abierto > RIESGO_MAX % -> avisa 🚨 (detecta entradas dobles)
   3. Órdenes de entrada del bot duplicadas, o pendientes con posición abierta -> las cancela
-  4. Edad >= 12h y candado no hecho: si pierde -> cierra; si gana -> stop asegura 90% (v2.1: mueve TODOS los stops,
-     lo verifica leyendo Bitunix y, si no lo puede confirmar, CIERRA la posición)
+  4. Edad >= CORTE_H (12h) y candado no hecho: si a las 12h NO ganaba -> cierra. Edad >= CANDADO_H (14h) y candado no hecho:
+     si pierde -> cierra; si gana -> stop asegura 90% (v2.1: mueve TODOS los stops, lo verifica leyendo Bitunix y, si no
+     lo puede confirmar, CIERRA la posición). Con CANDADO_H<=CORTE_H hay una sola revisión (regla v2.2).
   5. Edad >= 24h                    -> cierra
   6. Latido del bot (v2, sin falsas alarmas):
      · avisa solo si el bot lleva más de LATIDO_MIN (por defecto 30) min sin publicar;
@@ -27,7 +31,7 @@ Reglas (en cada corrida, idempotentes):
 
 Variables de entorno:
   BITUNIX_API_KEY, BITUNIX_SECRET_KEY   (llave SIN permiso de retiro)
-  SIMBOLOS=TAOUSDT   GRACIA_MIN=10   RIESGO_MAX=2.0   MODO=real|papel
+  SIMBOLOS=TAOUSDT   CORTE_H=12   CANDADO_H=14   GRACIA_MIN=10   RIESGO_MAX=2.0   MODO=real|papel
   NTFY_TOPIC=<canal>   NTFY_SERVER=https://ntfy.sh   LATIDO_TOPIC=<canal_estado>  LATIDO_MIN=30
   PREFIJO_BOT=taol
 """
@@ -36,7 +40,7 @@ from datetime import datetime, timezone, timedelta
 
 BASE = "https://fapi.bitunix.com"
 H = 3600_000
-CANDADO_H, HOLD_H, CANDADO = 12, 24, 0.90
+HOLD_H, CANDADO = 24, 0.90
 STOP_EMERGENCIA = 0.04
 CARACAS = timezone(timedelta(hours=-4))
 NOCHE = (22, 7)                      # de 10 p.m. a 7 a.m. Caracas: avisos de latido en silencio
@@ -45,6 +49,9 @@ TXT_CAIDO, TXT_VOLVIO = "no publica estado", "volvió a publicar"
 def env(k, d=None):
     v = os.environ.get(k)
     return v if v not in (None, "") else d
+
+CORTE_H = int(env("CORTE_H", 12))        # v2.3: a esta hora se cierra la posición que NO ganaba
+CANDADO_H = int(env("CANDADO_H", 14))    # v2.3: a esta hora la que gana asegura el CANDADO (v2.2: 12). Debe ser igual que en el bot
 
 # ───────── Cliente Bitunix (firma doble SHA256 de la doc oficial) ─────────
 class Bitunix:
@@ -88,6 +95,14 @@ class Bitunix:
         return self._lista(self._req("GET", "/api/v1/futures/trade/get_pending_orders", {"symbol": sym}), "orderList")
     def precio(self, sym):
         d = self.http.get(BASE + "/api/v1/futures/market/kline", params={"symbol": sym, "interval": "1m", "limit": 2}, timeout=20).json()["data"]
+        return float(max(d, key=lambda k: int(k["time"]))["close"])
+    def cierre_en(self, sym, t_ms):
+        """v2.3: cierre de la última vela de 1m ya cerrada a las t_ms (pública; endTime = tope, como usa backtest_tao.py)."""
+        d = self.http.get(BASE + "/api/v1/futures/market/kline",
+                          params={"symbol": sym, "interval": "1m", "limit": 5, "endTime": int(t_ms)}, timeout=20).json()["data"]
+        d = [k for k in d if int(k["time"]) + 60_000 <= t_ms]
+        if not d:
+            raise ValueError("sin vela de 1m cerrada a esa hora")
         return float(max(d, key=lambda k: int(k["time"]))["close"])
     def capital(self):
         d = self._req("GET", "/api/v1/futures/account", {"marginCoin": "USDT"})
@@ -139,7 +154,7 @@ def ultimo_estado(cfg, http=requests):
         print("estado del bot:", e)
         return None
 
-def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg, manual=False):
+def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg, manual=False, p12=None):
     """Acciones: ("cerrar", motivo) | ("stop", precio, existe, motivo) | ("cancelar", [oids], motivo) | ("aviso", texto)"""
     acc = []
     lado = lado_de(pos)
@@ -167,15 +182,39 @@ def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg, manual=False):
     if manual:
         return acc                                   # 👤 MANUAL: sin 12h ni 24h
     candado_hecho = (sl - ent) * lado >= 0
-    if edad_h >= CANDADO_H + gracia and not candado_hecho:
-        g = (precio - ent) * lado
+    if candado_hecho:
+        return acc
+    g = (precio - ent) * lado
+    if CANDADO_H > CORTE_H and edad_h < CANDADO_H + gracia:
+        # v2.3: entre el corte y el candado solo se cierra la que NO ganaba a las CORTE_H (p12 = precio de esa hora)
+        if edad_h >= CORTE_H + gracia:
+            if p12 is None:
+                if g <= 0:
+                    acc.append(("cerrar", f"revisión {CORTE_H}h: va perdiendo ({g:+.2f} por unidad) y no pude leer el precio de las {CORTE_H}h"))
+            elif (p12 - ent) * lado <= 0:
+                acc.append(("cerrar", f"revisión {CORTE_H}h: a las {CORTE_H}h no ganaba ({(p12 - ent) * lado:+.2f} por unidad)"))
+        return acc
+    if edad_h >= CANDADO_H + gracia:
         if g <= 0:
-            acc.append(("cerrar", f"revisión 12h: va perdiendo ({g:+.2f} por unidad)"))
+            acc.append(("cerrar", f"revisión {CANDADO_H}h: va perdiendo ({g:+.2f} por unidad)"))
         else:
             nuevo = ent + lado * CANDADO * g
             if (nuevo - sl) * lado > 0:
-                acc.append(("stop", nuevo, existe, f"revisión 12h: gana {g:+.2f}; stop asegura 90% en {nuevo:.2f}"))
+                acc.append(("stop", nuevo, existe, f"revisión {CANDADO_H}h: gana {g:+.2f}; stop asegura 90% en {nuevo:.2f}"))
     return acc
+
+def precio_corte(bx, sym, pos, ahora, cfg, p12_fn=None, manual=False):
+    """v2.3: precio de la hora del corte, solo si la posición está entre CORTE_H y CANDADO_H (si no, no hace falta)."""
+    if manual or CANDADO_H <= CORTE_H:
+        return None
+    t0 = int(pos["ctime"]); edad_h = (ahora - t0) / H; gracia = cfg["gracia_min"] / 60
+    if not (CORTE_H + gracia <= edad_h < CANDADO_H + gracia):
+        return None
+    try:
+        return float((p12_fn or bx.cierre_en)(sym, t0 + CORTE_H * H))
+    except Exception as e:
+        print("precio de las %dh:" % CORTE_H, e)
+        return None
 
 def depurar_entradas_sin_posicion(ordenes, cfg):
     """Sin posición: si hay más de una orden de entrada del bot viva, deja solo la más nueva."""
@@ -255,7 +294,7 @@ def revisar_latido(cfg, ahora, hay_algo_abierto, http=requests):
     ultimo = leer_topic(cfg, cfg["latido_topic"], "12h", http)
     hace = f"{(ahora / 1000 - max(m.get('time', 0) for m in ultimo)) / 60:.0f} min" if ultimo else "más de 12 h"
     prio = 2 if es_noche(ahora) else (4 if hay_algo_abierto else 3)
-    extra = (" Tienes una posición u orden abierta: el guardián la sigue protegiendo (12h, 24h y stop)."
+    extra = (" Tienes una posición u orden abierta: el guardián la sigue protegiendo (corte, candado, 24h y stop)."
              if hay_algo_abierto else " No hay posiciones ni órdenes abiertas: no hay dinero en riesgo.")
     return (f"⚠️ El bot {TXT_CAIDO} hace {hace} (¿Render reiniciando o caído?).{extra}", prio)
 
@@ -269,7 +308,7 @@ def avisar(cfg, texto, prioridad=4):
         except Exception as e:
             print("ntfy:", e)
 
-def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests):
+def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests, p12_fn=None):
     ahora = ahora or int(time.time() * 1000)
     hechos, abierto = [], False
     estado = ultimo_estado(cfg, http)
@@ -281,8 +320,11 @@ def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests):
         else:
             precio = (precio_fn or bx.precio)(sym)
             cap = (capital_fn or bx.capital)()
-            acciones = [(sym, p, a) for p in posiciones
-                        for a in decidir(p, tpsl, ordenes, precio, ahora, cap, cfg, modo_pos(estado, p.get("positionId")) == "manual")]
+            acciones = []
+            for p in posiciones:
+                manual = modo_pos(estado, p.get("positionId")) == "manual"
+                p12 = precio_corte(bx, sym, p, ahora, cfg, p12_fn, manual)
+                acciones += [(sym, p, a) for a in decidir(p, tpsl, ordenes, precio, ahora, cap, cfg, manual, p12)]
         for sym_, pos, a in acciones:
             txt = f"🛡️ {sym_}: " + (a[-1] if a[0] != "aviso" else a[1])
             if cfg["modo"] != "real" and a[0] != "aviso":
@@ -322,6 +364,6 @@ def config():
 if __name__ == "__main__":
     cfg = config()
     bx = Bitunix(env("BITUNIX_API_KEY"), env("BITUNIX_SECRET_KEY"))
-    print(f"Guardián v2.2 · MODO={cfg['modo'].upper()} ({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'})")
+    print(f"Guardián v2.3 · MODO={cfg['modo'].upper()} ({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'})")
     r = correr(bx, cfg)
-    print(f"Guardián v2.2: {len(r)} acciones · modo {cfg['modo']}")
+    print(f"Guardián v2.3: {len(r)} acciones · modo {cfg['modo']}")
