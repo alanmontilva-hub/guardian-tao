@@ -1,5 +1,5 @@
 """
-Guardián TAO v2.3 (21-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
+Guardián TAO v2.4 (26-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
 
 La única fuente de verdad es Bitunix:
   - hora de apertura  -> ctime de la posición
@@ -7,6 +7,8 @@ La única fuente de verdad es Bitunix:
   - stop vigente      -> orden TP/SL de la posición
   - candado hecho     -> el stop ya está del lado de la ganancia (o en entrada)
 
+v2.4: · ESTADO DEL BOT DESDE GITHUB (bot v7.7+): con el secreto ESTADO_TOKEN (token de solo lectura de libro-tao) lee
+        estado.json de la rama "estado" (modos de cada posición y latido_t). Sin el secreto, o si GitHub falla, usa ntfy como antes.
 v2.3: · CANDADO TARDÍO (igual que el bot v7.2): a las CORTE_H (12) se cierra la posición que NO ganaba; la que ganaba sigue con su
         stop y a las CANDADO_H (14) el stop sube a asegurar el 90% (si a esa hora ya no gana, se cierra). Para saber si ganaba a
         las 12h lee de Bitunix la vela de 1 min que cierra en ese momento (sin estado propio). CANDADO_H=12 devuelve la regla v2.2.
@@ -34,6 +36,7 @@ Variables de entorno:
   SIMBOLOS=TAOUSDT   CORTE_H=12   CANDADO_H=14   GRACIA_MIN=10   RIESGO_MAX=2.0   MODO=real|papel
   NTFY_TOPIC=<canal>   NTFY_SERVER=https://ntfy.sh   LATIDO_TOPIC=<canal_estado>  LATIDO_MIN=30
   PREFIJO_BOT=taol
+  ESTADO_TOKEN=<token solo lectura>  ESTADO_REPO=alanmontilva-hub/libro-tao  ESTADO_RAMA=estado   (v2.4)
 """
 import os, time, json, uuid, hashlib, requests
 from datetime import datetime, timezone, timedelta
@@ -144,7 +147,25 @@ def modo_pos(estado, pid):
             return o.get("modo") or "auto"
     return (e.get("modos") or {}).get(str(pid)) or e.get("modo_def") or "auto"
 
+def estado_github(cfg, http=requests):
+    """v2.4: estado.json que el bot escribe en GitHub (permanente). None si no hay token o falla."""
+    if not cfg.get("estado_token"):
+        return None
+    try:
+        r = http.get(f"https://api.github.com/repos/{cfg['estado_repo']}/contents/estado.json",
+                     params={"ref": cfg["estado_rama"]}, timeout=20,
+                     headers={"Authorization": f"Bearer {cfg['estado_token']}", "Accept": "application/vnd.github.raw+json"})
+        if r.status_code == 200:
+            return json.loads(r.text)
+        print("estado GitHub:", r.status_code, r.text[:150])
+    except Exception as e:
+        print("estado GitHub:", e)
+    return None
+
 def ultimo_estado(cfg, http=requests):
+    e = estado_github(cfg, http)
+    if e is not None:
+        return e
     if not cfg.get("latido_topic"):
         return None
     try:
@@ -279,9 +300,16 @@ def leer_topic(cfg, topic, desde, http=requests):
 
 def revisar_latido(cfg, ahora, hay_algo_abierto, http=requests):
     """Devuelve (texto, prioridad) o None. Un aviso por caída, sin alarma, y aviso de regreso."""
-    if not cfg["latido_topic"] or cfg["latido_min"] <= 0:
+    if cfg["latido_min"] <= 0 or not (cfg["latido_topic"] or cfg.get("estado_token")):
         return None
-    vivos = leer_topic(cfg, cfg["latido_topic"], f"{int(cfg['latido_min'])}m", http)
+    eg = estado_github(cfg, http)                  # v2.4: latido_t del estado en GitHub
+    if eg is not None and eg.get("latido_t"):
+        edad_min = (ahora - int(eg["latido_t"])) / 60000
+        vivos = [eg] if edad_min <= cfg["latido_min"] else []
+        hace_gh = f"{edad_min:.0f} min"
+    else:
+        vivos = leer_topic(cfg, cfg["latido_topic"], f"{int(cfg['latido_min'])}m", http) if cfg["latido_topic"] else []
+        hace_gh = None
     propios = leer_topic(cfg, cfg["ntfy"], "3h", http) if cfg.get("ntfy") else []
     ult_caido = max((m.get("time", 0) for m in propios if TXT_CAIDO in (m.get("message") or "")), default=0)
     ult_volvio = max((m.get("time", 0) for m in propios if TXT_VOLVIO in (m.get("message") or "")), default=0)
@@ -291,8 +319,11 @@ def revisar_latido(cfg, ahora, hay_algo_abierto, http=requests):
         return None
     if ult_caido and ult_caido > ult_volvio:
         return None                                # ya avisé de esta caída en las últimas 3 h
-    ultimo = leer_topic(cfg, cfg["latido_topic"], "12h", http)
-    hace = f"{(ahora / 1000 - max(m.get('time', 0) for m in ultimo)) / 60:.0f} min" if ultimo else "más de 12 h"
+    if hace_gh:
+        hace = hace_gh
+    else:
+        ultimo = leer_topic(cfg, cfg["latido_topic"], "12h", http) if cfg["latido_topic"] else []
+        hace = f"{(ahora / 1000 - max(m.get('time', 0) for m in ultimo)) / 60:.0f} min" if ultimo else "más de 12 h"
     prio = 2 if es_noche(ahora) else (4 if hay_algo_abierto else 3)
     extra = (" Tienes una posición u orden abierta: el guardián la sigue protegiendo (corte, candado, 24h y stop)."
              if hay_algo_abierto else " No hay posiciones ni órdenes abiertas: no hay dinero en riesgo.")
@@ -359,11 +390,13 @@ def config():
             "riesgo_max": float(env("RIESGO_MAX", 2.0)), "modo": str(env("MODO", "papel")).strip().lower(), "prefijo": env("PREFIJO_BOT", "taol"),
             "ntfy": env("NTFY_TOPIC"), "ntfy_server": env("NTFY_SERVER", "https://ntfy.sh"),
             "latido_topic": topic_latido(env("LATIDO_TOPIC"), env("NTFY_TOPIC")),
-            "latido_min": max(30.0, float(env("LATIDO_MIN", 30)))}
+            "latido_min": max(30.0, float(env("LATIDO_MIN", 30))),
+            "estado_token": env("ESTADO_TOKEN"), "estado_repo": env("ESTADO_REPO", "alanmontilva-hub/libro-tao"),
+            "estado_rama": env("ESTADO_RAMA", "estado")}
 
 if __name__ == "__main__":
     cfg = config()
     bx = Bitunix(env("BITUNIX_API_KEY"), env("BITUNIX_SECRET_KEY"))
-    print(f"Guardián v2.3 · MODO={cfg['modo'].upper()} ({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'})")
+    print(f"Guardián v2.4 · estado {'GitHub' if cfg['estado_token'] else 'ntfy'} · MODO={cfg['modo'].upper()} ({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'})")
     r = correr(bx, cfg)
-    print(f"Guardián v2.3: {len(r)} acciones · modo {cfg['modo']}")
+    print(f"Guardián v2.4: {len(r)} acciones · modo {cfg['modo']}")
