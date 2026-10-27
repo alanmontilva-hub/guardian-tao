@@ -339,6 +339,8 @@ def avisar(cfg, texto, prioridad=4):
         except Exception as e:
             print("ntfy:", e)
 
+ULT_LATIDO = [0]
+
 def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests, p12_fn=None):
     ahora = ahora or int(time.time() * 1000)
     hechos, abierto = [], False
@@ -378,7 +380,9 @@ def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests, 
             hechos.append((a[0], txt))
     try:
         lat = revisar_latido(cfg, ahora, abierto, http)
-        if lat:
+        # v2.5: en modo ciclo no repite el mismo aviso de latido cada 10 min (sí si es urgente: hay posición abierta)
+        if lat and (lat[1] >= 5 or ahora - ULT_LATIDO[0] >= 30 * 60000):
+            ULT_LATIDO[0] = ahora
             avisar(cfg, lat[0], lat[1])
             hechos.append(("latido", lat[0]))
     except Exception as e:
@@ -395,8 +399,22 @@ def config():
             "estado_rama": env("ESTADO_RAMA", "estado")}
 
 if __name__ == "__main__":
+    # v2.5: GitHub NO respeta el cron de 10 min en la práctica (corrió cada 3-6 h). Por eso cada ejecución
+    # vigila en ciclo DURACION_MIN minutos (una revisión cada PAUSA_MIN) y el cron solo la relanza.
     cfg = config()
     bx = Bitunix(env("BITUNIX_API_KEY"), env("BITUNIX_SECRET_KEY"))
-    print(f"Guardián v2.4 · estado {'GitHub' if cfg['estado_token'] else 'ntfy'} · MODO={cfg['modo'].upper()} ({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'})")
-    r = correr(bx, cfg)
-    print(f"Guardián v2.4: {len(r)} acciones · modo {cfg['modo']}")
+    dur, pausa = float(env("DURACION_MIN", 0)), max(1.0, float(env("PAUSA_MIN", 10)))
+    fin = time.time() + dur * 60
+    print(f"Guardián v2.5 · estado {'GitHub' if cfg['estado_token'] else 'ntfy'} · MODO={cfg['modo'].upper()} "
+          f"({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'}) · ciclo {dur:g} min, revisión cada {pausa:g} min")
+    vuelta = 0
+    while True:
+        vuelta += 1
+        try:
+            r = correr(bx, cfg)
+            print(f"[{time.strftime('%H:%M:%S')}] vuelta {vuelta}: {len(r)} acciones")
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] vuelta {vuelta} falló: {e}")
+        if time.time() + pausa * 60 > fin:
+            break
+        time.sleep(pausa * 60)

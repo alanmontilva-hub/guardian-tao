@@ -1,13 +1,13 @@
 name: guardian-tao
 on:
   schedule:
-    - cron: "*/10 * * * *"     # cada 10 min (GitHub puede retrasarlo unos minutos)
+    - cron: "*/10 * * * *"     # relanza; en la práctica GitHub lo dispara cada 3-6 h, por eso cada corrida vigila en ciclo
   workflow_dispatch: {}          # botón "Run workflow" para probar a mano
 concurrency: { group: guardian, cancel-in-progress: false }
 jobs:
   vigilar:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,6 +21,8 @@ jobs:
           LATIDO_TOPIC: ${{ secrets.LATIDO_TOPIC }}
           ESTADO_TOKEN: ${{ secrets.ESTADO_TOKEN }}
           LATIDO_MIN: "20"
+          DURACION_MIN: "350"          # v2.5: vigila ~5 h 50 min por corrida (máximo de GitHub: 6 h)
+          PAUSA_MIN: "5"               # una revisión cada 5 min
           MODO: ${{ vars.MODO || 'papel' }}
           SIMBOLOS: TAOUSDT
           GRACIA_MIN: "10"
