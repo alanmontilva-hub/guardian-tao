@@ -397,6 +397,9 @@ if __name__ == "__main__":
     print(f"Guardián v2.7 · estado {'GitHub' if cfg['estado_token'] else 'SIN ESTADO_TOKEN'} · avisos "
           f"{'Telegram' if cfg['tg_token'] and cfg['tg_chat'] else 'SOLO EN EL LOG (faltan TELEGRAM_TOKEN/TELEGRAM_CHAT_ID)'} · MODO={cfg['modo'].upper()} "
           f"({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'}) · ciclo {dur:g} min, revisión cada {pausa:g} min")
+    if str(env("PRUEBA_TG", "")).lower() in ("1", "si", "sí", "true"):       # v2.7: botón de prueba (Run workflow → prueba)
+        ok = avisar(cfg, "✅ Prueba del guardián v2.7: los avisos llegan por Telegram. No hay que hacer nada.", 3)
+        print("Prueba de Telegram:", "OK" if ok else "FALLÓ (revisa TELEGRAM_TOKEN y TELEGRAM_CHAT_ID)")
     vuelta = 0
     while True:
         vuelta += 1
