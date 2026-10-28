@@ -31,4 +31,4 @@ jobs:
           MODO: ${{ vars.MODO || 'papel' }}
           SIMBOLOS: TAOUSDT
           GRACIA_MIN: "10"
-          RIESGO_MAX: "2.0"
+          RIESGO_MAX: "8.5"          # v7.9: firma ×2 puede arriesgar hasta 2 % × 2 (freno) × 2 (firma) = 8 %
