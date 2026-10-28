@@ -24,7 +24,8 @@ Reglas (en cada corrida, idempotentes):
   4. Edad >= CORTE_H (12h) y candado no hecho: si a las 12h NO ganaba -> cierra. Edad >= CANDADO_H (14h) y candado no hecho:
      si pierde -> cierra; si gana -> stop asegura 90% (v2.1: mueve TODOS los stops, lo verifica leyendo Bitunix y, si no
      lo puede confirmar, CIERRA la posición). Con CANDADO_H<=CORTE_H hay una sola revisión (regla v2.2).
-  5. Edad >= 24h                    -> cierra
+  5. Edad >= 24h                    -> cierra, SALVO (v2.6) que el stop ya asegure ganancia: el bot v8.0 deja correr
+     esas operaciones con stop móvil; entonces el límite es CORRER_H (96 h) o la salida publicada por el bot (máx. 168 h).
   6. Latido del bot (v2, sin falsas alarmas):
      · avisa solo si el bot lleva más de LATIDO_MIN (por defecto 30) min sin publicar;
      · NUNCA como alarma: es una notificación normal (y silenciosa de 10 p.m. a 7 a.m. Caracas),
@@ -54,6 +55,7 @@ def env(k, d=None):
     return v if v not in (None, "") else d
 
 CORTE_H = int(env("CORTE_H", 12))        # v2.3: a esta hora se cierra la posición que NO ganaba
+CORRER_H = float(env("CORRER_H", 96))    # v2.6: límite de una operación que el bot deja correr (stop asegurando ganancia)
 CANDADO_H = int(env("CANDADO_H", 14))    # v2.3: a esta hora la que gana asegura el CANDADO (v2.2: 12). Debe ser igual que en el bot
 
 # ───────── Cliente Bitunix (firma doble SHA256 de la doc oficial) ─────────
@@ -175,7 +177,14 @@ def ultimo_estado(cfg, http=requests):
         print("estado del bot:", e)
         return None
 
-def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg, manual=False, p12=None):
+def salida_publicada(estado, pid):
+    """v2.6: hora de cierre que el bot publicó para esa posición (t24 = salida; si la deja correr, más tarde)."""
+    for o in (estado or {}).get("ops") or []:
+        if o.get("k") == "pos" and str(o.get("id")) == str(pid) and o.get("t24"):
+            return int(o["t24"])
+    return None
+
+def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg, manual=False, p12=None, salida=None):
     """Acciones: ("cerrar", motivo) | ("stop", precio, existe, motivo) | ("cancelar", [oids], motivo) | ("aviso", texto)"""
     acc = []
     lado = lado_de(pos)
@@ -189,8 +198,14 @@ def decidir(pos, tpsl, ordenes, precio, ahora, capital, cfg, manual=False, p12=N
     entradas = [o for o in ordenes if str(o.get("clientId") or "").startswith(pref) and not o.get("reduceOnly")]
     if entradas:
         acc.append(("cancelar", [o["orderId"] for o in entradas], "orden de entrada del bot pendiente con posición ya abierta"))
-    if edad_h >= HOLD_H + gracia and not manual:
-        acc.append(("cerrar", f"24h cumplidas ({edad_h:.1f}h)"))
+    asegura = sl is not None and (sl - ent) * lado > 0
+    lim_h = HOLD_H
+    if asegura:                                     # v2.6: puede estar corriendo (bot v8.0) → no se corta a las 24 h
+        lim_h = max(HOLD_H, CORRER_H)
+        if salida:
+            lim_h = min(168.0, max(lim_h, (salida - t0) / H))
+    if edad_h >= lim_h + gracia and not manual:
+        acc.append(("cerrar", f"{lim_h:.0f}h cumplidas ({edad_h:.1f}h)"))
         return acc
     if sl is None:
         sl = ent * (1 - STOP_EMERGENCIA * lado)
@@ -357,7 +372,8 @@ def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests, 
             for p in posiciones:
                 manual = modo_pos(estado, p.get("positionId")) == "manual"
                 p12 = precio_corte(bx, sym, p, ahora, cfg, p12_fn, manual)
-                acciones += [(sym, p, a) for a in decidir(p, tpsl, ordenes, precio, ahora, cap, cfg, manual, p12)]
+                acciones += [(sym, p, a) for a in decidir(p, tpsl, ordenes, precio, ahora, cap, cfg, manual, p12,
+                                                          salida_publicada(estado, p.get("positionId")))]
         for sym_, pos, a in acciones:
             txt = f"🛡️ {sym_}: " + (a[-1] if a[0] != "aviso" else a[1])
             if cfg["modo"] != "real" and a[0] != "aviso":
@@ -405,7 +421,7 @@ if __name__ == "__main__":
     bx = Bitunix(env("BITUNIX_API_KEY"), env("BITUNIX_SECRET_KEY"))
     dur, pausa = float(env("DURACION_MIN", 0)), max(1.0, float(env("PAUSA_MIN", 10)))
     fin = time.time() + dur * 60
-    print(f"Guardián v2.5 · estado {'GitHub' if cfg['estado_token'] else 'ntfy'} · MODO={cfg['modo'].upper()} "
+    print(f"Guardián v2.6 · estado {'GitHub' if cfg['estado_token'] else 'ntfy'} · MODO={cfg['modo'].upper()} "
           f"({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'}) · ciclo {dur:g} min, revisión cada {pausa:g} min")
     vuelta = 0
     while True:
