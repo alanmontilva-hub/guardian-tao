@@ -18,12 +18,17 @@ jobs:
         run: echo "ESTADO_TOKEN presente"
         env:
           TIENE_TOKEN: ${{ secrets.ESTADO_TOKEN }}
+      - name: "Comprobar secretos de Telegram (avisos del guardián, v2.7)"
+        if: ${{ env.TIENE_TG != '' }}
+        run: echo "TELEGRAM_TOKEN y TELEGRAM_CHAT_ID presentes"
+        env:
+          TIENE_TG: ${{ secrets.TELEGRAM_TOKEN && secrets.TELEGRAM_CHAT_ID }}
       - run: python guardian.py
         env:
           BITUNIX_API_KEY: ${{ secrets.BITUNIX_API_KEY }}
           BITUNIX_SECRET_KEY: ${{ secrets.BITUNIX_SECRET_KEY }}
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          LATIDO_TOPIC: ${{ secrets.LATIDO_TOPIC }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ESTADO_TOKEN: ${{ secrets.ESTADO_TOKEN }}
           LATIDO_MIN: "20"
           DURACION_MIN: "350"          # v2.5: vigila ~5 h 50 min por corrida (máximo de GitHub: 6 h)

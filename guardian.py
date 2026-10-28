@@ -1,5 +1,5 @@
 """
-Guardián TAO v2.4 (26-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
+Guardián TAO v2.7 (28-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
 
 La única fuente de verdad es Bitunix:
   - hora de apertura  -> ctime de la posición
@@ -7,6 +7,10 @@ La única fuente de verdad es Bitunix:
   - stop vigente      -> orden TP/SL de la posición
   - candado hecho     -> el stop ya está del lado de la ganancia (o en entrada)
 
+v2.7: · SIN NTFY (se agotaba el cupo diario de ntfy.sh). Los avisos van por TELEGRAM (secretos TELEGRAM_TOKEN y
+        TELEGRAM_CHAT_ID, los mismos del bot en Render) y el latido del bot se lee SOLO de estado.json en GitHub (ESTADO_TOKEN).
+        Un aviso por caída del bot (repite cada 3 h si sigue caído) y aviso cuando vuelve; de noche llegan sin sonido.
+v2.6: · Respeta las operaciones que el bot v8.0 deja correr (stop asegurando ganancia → hasta 96 h o la salida publicada).
 v2.4: · ESTADO DEL BOT DESDE GITHUB (bot v7.7+): con el secreto ESTADO_TOKEN (token de solo lectura de libro-tao) lee
         estado.json de la rama "estado" (modos de cada posición y latido_t). Sin el secreto, o si GitHub falla, usa ntfy como antes.
 v2.3: · CANDADO TARDÍO (igual que el bot v7.2): a las CORTE_H (12) se cierra la posición que NO ganaba; la que ganaba sigue con su
@@ -35,7 +39,7 @@ Reglas (en cada corrida, idempotentes):
 Variables de entorno:
   BITUNIX_API_KEY, BITUNIX_SECRET_KEY   (llave SIN permiso de retiro)
   SIMBOLOS=TAOUSDT   CORTE_H=12   CANDADO_H=14   GRACIA_MIN=10   RIESGO_MAX=2.0   MODO=real|papel
-  NTFY_TOPIC=<canal>   NTFY_SERVER=https://ntfy.sh   LATIDO_TOPIC=<canal_estado>  LATIDO_MIN=30
+  TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (v2.7: avisos por Telegram)   LATIDO_MIN=30
   PREFIJO_BOT=taol
   ESTADO_TOKEN=<token solo lectura>  ESTADO_REPO=alanmontilva-hub/libro-tao  ESTADO_RAMA=estado   (v2.4)
 """
@@ -165,17 +169,7 @@ def estado_github(cfg, http=requests):
     return None
 
 def ultimo_estado(cfg, http=requests):
-    e = estado_github(cfg, http)
-    if e is not None:
-        return e
-    if not cfg.get("latido_topic"):
-        return None
-    try:
-        msgs = leer_topic(cfg, cfg["latido_topic"], "12h", http)
-        return json.loads(msgs[-1].get("message") or "{}") if msgs else None
-    except Exception as e:
-        print("estado del bot:", e)
-        return None
+    return estado_github(cfg, http)              # v2.7: solo GitHub (sin ntfy)
 
 def salida_publicada(estado, pid):
     """v2.6: hora de cierre que el bot publicó para esa posición (t24 = salida; si la deja correr, más tarde)."""
@@ -293,66 +287,46 @@ def es_noche(ahora_ms):
     h = datetime.fromtimestamp(ahora_ms / 1000, CARACAS).hour
     return h >= NOCHE[0] or h < NOCHE[1]
 
-def topic_latido(latido, ntfy):
-    """El bot publica su estado en <NTFY_TOPIC>_estado. Si LATIDO_TOPIC quedó vacío o igual al canal principal
-    (así estaba: el guardián leía sus propios avisos y siempre decía 'no publica estado'), usa el correcto."""
-    if ntfy and (not latido or latido == ntfy or not latido.endswith("_estado")):
-        return ntfy + "_estado"
-    return latido
-
-def leer_topic(cfg, topic, desde, http=requests):
-    """Mensajes del canal ntfy desde hace `desde` (ej. '30m', '3h'). Devuelve lista de dicts."""
-    r = http.get(f"{cfg['ntfy_server']}/{topic}/json", params={"poll": "1", "since": desde}, timeout=20)
-    out = []
-    for l in r.text.splitlines():
-        try:
-            j = json.loads(l)
-            if j.get("event", "message") == "message":
-                out.append(j)
-        except ValueError:
-            pass
-    return out
+LATIDO_EST = {"caido_t": 0}          # v2.7: memoria del aviso de caída dentro de la corrida (antes se leía de ntfy)
 
 def revisar_latido(cfg, ahora, hay_algo_abierto, http=requests):
-    """Devuelve (texto, prioridad) o None. Un aviso por caída, sin alarma, y aviso de regreso."""
-    if cfg["latido_min"] <= 0 or not (cfg["latido_topic"] or cfg.get("estado_token")):
+    """Devuelve (texto, prioridad) o None. Un aviso por caída (repite cada 3 h), sin alarma, y aviso de regreso."""
+    if cfg["latido_min"] <= 0 or not cfg.get("estado_token"):
         return None
-    eg = estado_github(cfg, http)                  # v2.4: latido_t del estado en GitHub
-    if eg is not None and eg.get("latido_t"):
-        edad_min = (ahora - int(eg["latido_t"])) / 60000
-        vivos = [eg] if edad_min <= cfg["latido_min"] else []
-        hace_gh = f"{edad_min:.0f} min"
-    else:
-        vivos = leer_topic(cfg, cfg["latido_topic"], f"{int(cfg['latido_min'])}m", http) if cfg["latido_topic"] else []
-        hace_gh = None
-    propios = leer_topic(cfg, cfg["ntfy"], "3h", http) if cfg.get("ntfy") else []
-    ult_caido = max((m.get("time", 0) for m in propios if TXT_CAIDO in (m.get("message") or "")), default=0)
-    ult_volvio = max((m.get("time", 0) for m in propios if TXT_VOLVIO in (m.get("message") or "")), default=0)
-    if vivos:
-        if ult_caido and ult_caido > ult_volvio:
+    eg = estado_github(cfg, http)
+    if eg is None or not eg.get("latido_t"):
+        return None                                # GitHub no respondió: no se acusa al bot
+    edad_min = (ahora - int(eg["latido_t"])) / 60000
+    if edad_min <= cfg["latido_min"]:
+        if LATIDO_EST["caido_t"]:
+            LATIDO_EST["caido_t"] = 0
             return ("✅ El bot volvió a publicar su estado. Todo normal.", 2)
         return None
-    if ult_caido and ult_caido > ult_volvio:
-        return None                                # ya avisé de esta caída en las últimas 3 h
-    if hace_gh:
-        hace = hace_gh
-    else:
-        ultimo = leer_topic(cfg, cfg["latido_topic"], "12h", http) if cfg["latido_topic"] else []
-        hace = f"{(ahora / 1000 - max(m.get('time', 0) for m in ultimo)) / 60:.0f} min" if ultimo else "más de 12 h"
+    if LATIDO_EST["caido_t"] and ahora - LATIDO_EST["caido_t"] < 3 * H:
+        return None
+    LATIDO_EST["caido_t"] = ahora
     prio = 2 if es_noche(ahora) else (4 if hay_algo_abierto else 3)
-    extra = (" Tienes una posición u orden abierta: el guardián la sigue protegiendo (corte, candado, 24h y stop)."
+    extra = (" Tienes una posición u orden abierta: el guardián la sigue protegiendo (corte, candado, salida y stop)."
              if hay_algo_abierto else " No hay posiciones ni órdenes abiertas: no hay dinero en riesgo.")
-    return (f"⚠️ El bot {TXT_CAIDO} hace {hace} (¿Render reiniciando o caído?).{extra}", prio)
+    return (f"⚠️ El bot {TXT_CAIDO} hace {edad_min:.0f} min (¿Render reiniciando o caído?).{extra}", prio)
 
 # ───────── Ejecución ─────────
-def avisar(cfg, texto, prioridad=4):
+def avisar(cfg, texto, prioridad=4, http=requests):
+    """v2.7: Telegram (sin sonido si es de noche o prioridad ≤ 2, salvo las 🚨)."""
     print(texto)
-    if cfg.get("ntfy"):
-        try:
-            requests.post(f"{cfg['ntfy_server']}/{cfg['ntfy']}", data=texto.encode(),
-                          headers={"Title": "Guardián TAO", "Priority": str(prioridad)}, timeout=15)
-        except Exception as e:
-            print("ntfy:", e)
+    if not (cfg.get("tg_token") and cfg.get("tg_chat")):
+        return False
+    silencio = ("🚨" not in texto) and (prioridad <= 2 or es_noche(int(time.time() * 1000)))
+    try:
+        r = http.post(f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage",
+                      json={"chat_id": cfg["tg_chat"], "text": f"🛡️ Guardián TAO\n{texto}", "disable_notification": silencio},
+                      timeout=15)
+        if r.status_code != 200:
+            print("telegram:", r.status_code, r.text[:200])
+        return r.status_code == 200
+    except Exception as e:
+        print("telegram:", e)
+        return False
 
 ULT_LATIDO = [0]
 
@@ -402,14 +376,13 @@ def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests, 
             avisar(cfg, lat[0], lat[1])
             hechos.append(("latido", lat[0]))
     except Exception as e:
-        print("latido:", e)                     # un fallo leyendo ntfy nunca debe despertar a nadie
+        print("latido:", e)                     # un fallo leyendo GitHub nunca debe despertar a nadie
     return hechos
 
 def config():
     return {"simbolos": env("SIMBOLOS", "TAOUSDT").split(","), "gracia_min": float(env("GRACIA_MIN", 10)),
             "riesgo_max": float(env("RIESGO_MAX", 2.0)), "modo": str(env("MODO", "papel")).strip().lower(), "prefijo": env("PREFIJO_BOT", "taol"),
-            "ntfy": env("NTFY_TOPIC"), "ntfy_server": env("NTFY_SERVER", "https://ntfy.sh"),
-            "latido_topic": topic_latido(env("LATIDO_TOPIC"), env("NTFY_TOPIC")),
+            "tg_token": env("TELEGRAM_TOKEN"), "tg_chat": env("TELEGRAM_CHAT_ID"),
             "latido_min": max(30.0, float(env("LATIDO_MIN", 30))),
             "estado_token": env("ESTADO_TOKEN"), "estado_repo": env("ESTADO_REPO", "alanmontilva-hub/libro-tao"),
             "estado_rama": env("ESTADO_RAMA", "estado")}
@@ -421,7 +394,8 @@ if __name__ == "__main__":
     bx = Bitunix(env("BITUNIX_API_KEY"), env("BITUNIX_SECRET_KEY"))
     dur, pausa = float(env("DURACION_MIN", 0)), max(1.0, float(env("PAUSA_MIN", 10)))
     fin = time.time() + dur * 60
-    print(f"Guardián v2.6 · estado {'GitHub' if cfg['estado_token'] else 'ntfy'} · MODO={cfg['modo'].upper()} "
+    print(f"Guardián v2.7 · estado {'GitHub' if cfg['estado_token'] else 'SIN ESTADO_TOKEN'} · avisos "
+          f"{'Telegram' if cfg['tg_token'] and cfg['tg_chat'] else 'SOLO EN EL LOG (faltan TELEGRAM_TOKEN/TELEGRAM_CHAT_ID)'} · MODO={cfg['modo'].upper()} "
           f"({'ejecuta de verdad' if cfg['modo'] == 'real' else 'PAPEL: solo avisa'}) · ciclo {dur:g} min, revisión cada {pausa:g} min")
     vuelta = 0
     while True:
