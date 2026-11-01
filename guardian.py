@@ -1,4 +1,5 @@
 """
+v2.8: · LOGS PÚBLICOS SIN DATOS: el repo es público (para las Actions gratis); ya no se imprime el texto de los avisos ni de las excepciones.
 Guardián TAO v2.7 (28-oct-2026) — corre en GitHub Actions, sin estado propio. No es asesoría financiera.
 
 La única fuente de verdad es Bitunix:
@@ -163,9 +164,9 @@ def estado_github(cfg, http=requests):
                      headers={"Authorization": f"Bearer {cfg['estado_token']}", "Accept": "application/vnd.github.raw+json"})
         if r.status_code == 200:
             return json.loads(r.text)
-        print("estado GitHub:", r.status_code, r.text[:150])
+        print("estado GitHub: HTTP", r.status_code)
     except Exception as e:
-        print("estado GitHub:", e)
+        print("estado GitHub:", _seguro(e))
     return None
 
 def ultimo_estado(cfg, http=requests):
@@ -243,7 +244,7 @@ def precio_corte(bx, sym, pos, ahora, cfg, p12_fn=None, manual=False):
     try:
         return float((p12_fn or bx.cierre_en)(sym, t0 + CORTE_H * H))
     except Exception as e:
-        print("precio de las %dh:" % CORTE_H, e)
+        print("precio de las %dh:" % CORTE_H, _seguro(e))
         return None
 
 def depurar_entradas_sin_posicion(ordenes, cfg):
@@ -272,14 +273,14 @@ def mover_verificado(bx, sym, pos, nivel):
             try:
                 bx.modificar_sl_orden(t.get("id") or t.get("orderId"), nivel, t.get("slQty"))
             except Exception as e:
-                print("modificar stop de orden:", e)
+                print("modificar stop de orden:", _seguro(e))
     vig = bx.tpsl(sym)
     if not cubierto(vig, pos, nivel):
         existe = any(str(t.get("positionId")) == str(pos.get("positionId")) and not t.get("slQty") for t in vig)
         try:
             bx.poner_stop(sym, pos["positionId"], nivel, existe)
         except Exception as e:
-            print("stop de posición:", e)
+            print("stop de posición:", _seguro(e))
     return cubierto(bx.tpsl(sym), pos, nivel)
 
 # ───────── Latido del bot (v2) ─────────
@@ -311,9 +312,15 @@ def revisar_latido(cfg, ahora, hay_algo_abierto, http=requests):
     return (f"⚠️ El bot {TXT_CAIDO} hace {edad_min:.0f} min (¿Render reiniciando o caído?).{extra}", prio)
 
 # ───────── Ejecución ─────────
+def _seguro(e):
+    """v2.8: el repo es público y los logs de Actions también: nunca imprimir el texto de una excepción (puede traer
+    respuestas del exchange con montos, ids u órdenes). Solo el tipo de error."""
+    return type(e).__name__
+
+
 def avisar(cfg, texto, prioridad=4, http=requests):
     """v2.7: Telegram (sin sonido si es de noche o prioridad ≤ 2, salvo las 🚨)."""
-    print(texto)
+    print("aviso " + ("🚨 crítico" if "🚨" in texto else "normal") + " (el detalle va solo por Telegram)")
     if not (cfg.get("tg_token") and cfg.get("tg_chat")):
         return False
     silencio = ("🚨" not in texto) and (prioridad <= 2 or es_noche(int(time.time() * 1000)))
@@ -322,10 +329,10 @@ def avisar(cfg, texto, prioridad=4, http=requests):
                       json={"chat_id": cfg["tg_chat"], "text": f"🛡️ Guardián TAO\n{texto}", "disable_notification": silencio},
                       timeout=15)
         if r.status_code != 200:
-            print("telegram:", r.status_code, r.text[:200])
+            print("telegram: HTTP", r.status_code)
         return r.status_code == 200
     except Exception as e:
-        print("telegram:", e)
+        print("telegram:", _seguro(e))
         return False
 
 ULT_LATIDO = [0]
@@ -376,7 +383,7 @@ def correr(bx, cfg, ahora=None, precio_fn=None, capital_fn=None, http=requests, 
             avisar(cfg, lat[0], lat[1])
             hechos.append(("latido", lat[0]))
     except Exception as e:
-        print("latido:", e)                     # un fallo leyendo GitHub nunca debe despertar a nadie
+        print("latido:", _seguro(e))                     # un fallo leyendo GitHub nunca debe despertar a nadie
     return hechos
 
 def config():
@@ -407,7 +414,7 @@ if __name__ == "__main__":
             r = correr(bx, cfg)
             print(f"[{time.strftime('%H:%M:%S')}] vuelta {vuelta}: {len(r)} acciones")
         except Exception as e:
-            print(f"[{time.strftime('%H:%M:%S')}] vuelta {vuelta} falló: {e}")
+            print(f"[{time.strftime('%H:%M:%S')}] vuelta {vuelta} falló: {_seguro(e)}")
         if time.time() + pausa * 60 > fin:
             break
         time.sleep(pausa * 60)
